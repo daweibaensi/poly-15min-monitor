@@ -428,4 +428,5 @@ def render_dashboard(n):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=8050)
+    port = int(os.getenv("PORT", 8050))  # Railway 会自动注入 PORT
+    app.run(debug=False, host="0.0.0.0", port=port)
