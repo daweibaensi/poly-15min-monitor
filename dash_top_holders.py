@@ -1,11 +1,9 @@
 """
-Polymarket 15min Top Holders Live Dashboard (最终稳定版 - Telegram推送无颜色错误)
-- 去除所有 <span style> 标签，避免 400 Bad Request
-- 用 emoji + 粗体区分方向与加减仓（视觉足够明显）
-- 支持多个 chat_id（.env 用逗号分隔）
-- APScheduler 后台定时执行 update_data()（不依赖浏览器）
+Polymarket 15min Top Holders Live Dashboard (最终修复版 - 页面自动刷新 + 后台推送)
+- APScheduler 后台每 INTERVAL_SEC 秒更新数据 + Telegram 推送（不依赖浏览器）
+- 前端 dummy Interval 每 45 秒触发渲染（页面自动刷新）
 - 时间显示 UTC+8 (Asia/Hong_Kong)
-- 其他功能完整
+- 所有阈值 .env 可调
 """
 
 import logging
@@ -35,7 +33,7 @@ CONCENTRATION_THRESHOLD = int(os.getenv("CONCENTRATION_THRESHOLD", 30000))
 DELTA_THRESHOLD = int(os.getenv("DELTA_THRESHOLD", 1000))
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # 支持多个，用逗号分隔
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 COINS = ["BTC", "ETH", "XRP", "SOL"]
 PREFIXES = {c: f"{c.lower()}-updown-15m-" for c in COINS}
@@ -170,7 +168,7 @@ def update_data():
                 "down": down_df.copy()
             }
 
-            # Telegram 推送（稳定版：去除 span style，用 emoji + 粗体区分）
+            # Telegram 推送（稳定版）
             if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
                 chat_ids = [cid.strip() for cid in TELEGRAM_CHAT_ID.split(",") if cid.strip()]
                 messages = []
@@ -183,17 +181,17 @@ def update_data():
                         if "UP" in w:
                             if "加仓" in w:
                                 emoji = "📈"
-                                line = f"{emoji} <b>UP 加仓</b> {w.split(' ')[2:]}"
+                                line = f"{emoji} <b>UP 加仓</b> {w.split(' ', 3)[-1]}"
                             else:
                                 emoji = "📉"
-                                line = f"{emoji} <b>UP 减仓</b> {w.split(' ')[2:]}"
-                        else:  # DOWN
+                                line = f"{emoji} <b>UP 减仓</b> {w.split(' ', 3)[-1]}"
+                        else:
                             if "加仓" in w:
                                 emoji = "📉"
-                                line = f"{emoji} <b>DOWN 加仓</b> {w.split(' ')[2:]}"
+                                line = f"{emoji} <b>DOWN 加仓</b> {w.split(' ', 3)[-1]}"
                             else:
                                 emoji = "📈"
-                                line = f"{emoji} <b>DOWN 减仓</b> {w.split(' ')[2:]}"
+                                line = f"{emoji} <b>DOWN 减仓</b> {w.split(' ', 3)[-1]}"
 
                         messages.append(line)
 
@@ -220,8 +218,8 @@ def update_data():
         except Exception as e:
             logger.error(f"{coin} 更新失败: {e}")
 
-# 启动服务器端定时器
-scheduler = BackgroundScheduler(timezone=HK_TZ)
+# 启动后台定时器
+scheduler = BackgroundScheduler(timezone=ZoneInfo("Asia/Hong_Kong"))
 scheduler.add_job(update_data, 'interval', seconds=INTERVAL_SEC)
 scheduler.start()
 
@@ -230,13 +228,13 @@ app = dash.Dash(__name__, external_stylesheets=["https://cdn.jsdelivr.net/npm/bo
 app.layout = html.Div([
     html.H1("Polymarket 15min Top Holders Live Dashboard", className="text-center mb-4"),
     html.Hr(),
-    dcc.Interval(id="dummy-interval", interval=3600*1000, n_intervals=0),  # dummy Interval，每小时一次，保持页面活跃
+    dcc.Interval(id="refresh-interval", interval=INTERVAL_SEC * 1000, n_intervals=0),  # 前端每 INTERVAL_SEC 秒刷新一次
     html.Div(id="dashboard-content", className="container")
 ])
 
 @app.callback(
     Output("dashboard-content", "children"),
-    Input("dummy-interval", "n_intervals")
+    Input("refresh-interval", "n_intervals")
 )
 def render_dashboard(n):
     children = []
