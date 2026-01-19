@@ -1,9 +1,9 @@
 """
-Polymarket 15min Top Holders Live Dashboard (最终稳定版 - 修复 Telegram 推送用户名丢失)
+Polymarket 15min Top Holders Live Dashboard (最终稳定版 - Telegram推送用户名+shares修复)
 - APScheduler 后台定时执行 update_data()（不依赖浏览器）
 - 前端 Interval 每 INTERVAL_SEC 秒刷新页面内容
 - 时间显示 UTC+8 (Asia/Hong_Kong)
-- Telegram 推送修复：正确显示用户名 + Δ 值
+- Telegram 推送修复：用户名 + shares，不重复
 - 支持多个 chat_id
 """
 
@@ -148,9 +148,8 @@ def update_data():
                     for addr, row in large_delta.iterrows():
                         delta_val = row["delta"]
                         sign = "+" if delta_val > 0 else "-"
-                        action = "加仓" if delta_val > 0 else "减仓"
                         username = row['full_user']
-                        delta_str = f"{direction} {action} {username} ({sign}{abs(delta_val):,.0f} shares)"
+                        delta_str = f"{direction} { '加仓' if delta_val > 0 else '减仓' } {username} ({sign}{abs(delta_val):,.0f} shares)"
                         delta_warnings.append(delta_str)
 
             has_concentration = any(df["shares"].max() > CONCENTRATION_THRESHOLD for df in [up_df, down_df])
@@ -171,7 +170,7 @@ def update_data():
                 "down": down_df.copy()
             }
 
-            # Telegram 推送（稳定版：正确显示用户名）
+            # Telegram 推送（修复用户名 + shares 显示，不重复）
             if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
                 chat_ids = [cid.strip() for cid in TELEGRAM_CHAT_ID.split(",") if cid.strip()]
                 messages = []
@@ -191,7 +190,7 @@ def update_data():
                                 emoji = "📉"
                             else:
                                 emoji = "📈"
-                        messages.append(f"{emoji} <b>{w.split(' ', 2)[1:3]}</b> {w.split(' ', 3)[-1]}")
+                        messages.append(f"{emoji} {w}")
 
                 if messages:
                     msg = "\n".join(messages)
