@@ -1,9 +1,10 @@
 """
-Polymarket 15min Top Holders Live Dashboard (最终修复版 - 页面自动刷新 + 后台推送)
-- APScheduler 后台每 INTERVAL_SEC 秒更新数据 + Telegram 推送（不依赖浏览器）
-- 前端 dummy Interval 每 45 秒触发渲染（页面自动刷新）
+Polymarket 15min Top Holders Live Dashboard (最终稳定版 - 修复 Telegram 推送用户名丢失)
+- APScheduler 后台定时执行 update_data()（不依赖浏览器）
+- 前端 Interval 每 INTERVAL_SEC 秒刷新页面内容
 - 时间显示 UTC+8 (Asia/Hong_Kong)
-- 所有阈值 .env 可调
+- Telegram 推送修复：正确显示用户名 + Δ 值
+- 支持多个 chat_id
 """
 
 import logging
@@ -148,7 +149,9 @@ def update_data():
                         delta_val = row["delta"]
                         sign = "+" if delta_val > 0 else "-"
                         action = "加仓" if delta_val > 0 else "减仓"
-                        delta_warnings.append(f"{direction} {action} {row['full_user']} ({sign}{abs(delta_val):,.0f} shares)")
+                        username = row['full_user']
+                        delta_str = f"{direction} {action} {username} ({sign}{abs(delta_val):,.0f} shares)"
+                        delta_warnings.append(delta_str)
 
             has_concentration = any(df["shares"].max() > CONCENTRATION_THRESHOLD for df in [up_df, down_df])
 
@@ -168,7 +171,7 @@ def update_data():
                 "down": down_df.copy()
             }
 
-            # Telegram 推送（稳定版）
+            # Telegram 推送（稳定版：正确显示用户名）
             if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
                 chat_ids = [cid.strip() for cid in TELEGRAM_CHAT_ID.split(",") if cid.strip()]
                 messages = []
@@ -181,19 +184,14 @@ def update_data():
                         if "UP" in w:
                             if "加仓" in w:
                                 emoji = "📈"
-                                line = f"{emoji} <b>UP 加仓</b> {w.split(' ', 3)[-1]}"
                             else:
                                 emoji = "📉"
-                                line = f"{emoji} <b>UP 减仓</b> {w.split(' ', 3)[-1]}"
                         else:
                             if "加仓" in w:
                                 emoji = "📉"
-                                line = f"{emoji} <b>DOWN 加仓</b> {w.split(' ', 3)[-1]}"
                             else:
                                 emoji = "📈"
-                                line = f"{emoji} <b>DOWN 减仓</b> {w.split(' ', 3)[-1]}"
-
-                        messages.append(line)
+                        messages.append(f"{emoji} <b>{w.split(' ', 2)[1:3]}</b> {w.split(' ', 3)[-1]}")
 
                 if messages:
                     msg = "\n".join(messages)
@@ -228,7 +226,7 @@ app = dash.Dash(__name__, external_stylesheets=["https://cdn.jsdelivr.net/npm/bo
 app.layout = html.Div([
     html.H1("Polymarket 15min Top Holders Live Dashboard", className="text-center mb-4"),
     html.Hr(),
-    dcc.Interval(id="refresh-interval", interval=INTERVAL_SEC * 1000, n_intervals=0),  # 前端每 INTERVAL_SEC 秒刷新一次
+    dcc.Interval(id="refresh-interval", interval=INTERVAL_SEC * 1000, n_intervals=0),  # 前端自动刷新
     html.Div(id="dashboard-content", className="container")
 ])
 
