@@ -5,3 +5,4 @@ pandas
 httpx
 python-dotenv
 requests
+apscheduler
