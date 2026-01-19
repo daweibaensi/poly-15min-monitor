@@ -1,20 +1,22 @@
 """
-Polymarket 15min Top Holders Live Dashboard (最终版 - 服务器端定时 + UTC+8 时间)
-- 用 APScheduler 后台定时执行 update_data()，不依赖浏览器访问
-- 时间显示为 UTC+8 (香港时间)
-- Telegram 推送支持多个 chat_id
-- 所有阈值从 .env 可调
+Polymarket 15min Top Holders Live Dashboard (Railway 修复版)
+- APScheduler 后台定时执行 update_data()（不依赖浏览器）
+- 保留 dummy Interval 让 Dash 正常渲染页面
+- 时间显示 UTC+8 (Asia/Hong_Kong)
+- Telegram 推送稳定
+- 所有阈值 .env 可调
 """
 
 import logging
 import re
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 import httpx
 from dotenv import load_dotenv
 import dash
-from dash import html
+from dash import dcc, html
+from dash.dependencies import Input, Output
 import plotly.graph_objects as go
 import pandas as pd
 import requests
@@ -22,7 +24,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 load_dotenv()
 
-# 配置（从 .env 读取）
+# 配置
 INTERVAL_SEC = int(os.getenv("QUERY_INTERVAL_SECONDS", 45))
 TOP_N = min(int(os.getenv("TOP_LIMIT", 12)), 20)
 MIN_BALANCE = int(os.getenv("MIN_BALANCE", 50))
@@ -33,7 +35,7 @@ CONCENTRATION_THRESHOLD = int(os.getenv("CONCENTRATION_THRESHOLD", 30000))
 DELTA_THRESHOLD = int(os.getenv("DELTA_THRESHOLD", 1000))
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # 支持多个，用逗号分隔
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 COINS = ["BTC", "ETH", "XRP", "SOL"]
 PREFIXES = {c: f"{c.lower()}-updown-15m-" for c in COINS}
@@ -50,7 +52,6 @@ logger = logging.getLogger(__name__)
 current_data = {}
 prev_data = {}
 
-# UTC+8 时区
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
 
 def fetch_holders(condition_id: str):
@@ -181,17 +182,21 @@ def update_data():
                     for w in delta_warnings:
                         if "UP" in w:
                             if "加仓" in w:
-                                emoji = "📈 <b>UP 加仓</b>"
+                                emoji = "📈"
+                                color = "#006400"
                             else:
-                                emoji = "📉 <b>UP 减仓</b>"
+                                emoji = "📉"
+                                color = "#90EE90"
                         else:
                             if "加仓" in w:
-                                emoji = "📉 <b>DOWN 加仓</b>"
+                                emoji = "📉"
+                                color = "#8B0000"
                             else:
-                                emoji = "📈 <b>DOWN 减仓</b>"
+                                emoji = "📈"
+                                color = "#FF4040"
 
-                        line = f"{emoji} {w.replace(row['full_user'], row['user'])}"
-                        messages.append(line)
+                        colored_line = f'<span style="color:{color}">{emoji} {w}</span>'
+                        messages.append(colored_line)
 
                 if messages:
                     msg = "\n".join(messages)
@@ -217,7 +222,7 @@ def update_data():
             logger.error(f"{coin} 更新失败: {e}")
 
 # 服务器端定时器
-scheduler = BackgroundScheduler(timezone=HK_TZ)
+scheduler = BackgroundScheduler(timezone=ZoneInfo("Asia/Hong_Kong"))
 scheduler.add_job(update_data, 'interval', seconds=INTERVAL_SEC)
 scheduler.start()
 
@@ -226,15 +231,15 @@ app = dash.Dash(__name__, external_stylesheets=["https://cdn.jsdelivr.net/npm/bo
 app.layout = html.Div([
     html.H1("Polymarket 15min Top Holders Live Dashboard", className="text-center mb-4"),
     html.Hr(),
+    dcc.Interval(id="dummy-interval", interval=999999*1000, n_intervals=0),  # dummy 保持页面活跃
     html.Div(id="dashboard-content", className="container")
 ])
 
 @app.callback(
     Output("dashboard-content", "children"),
-    Input("interval-component", "n_intervals")  # 保留一个 dummy Interval 让页面刷新
+    Input("dummy-interval", "n_intervals")
 )
 def render_dashboard(n):
-    # 页面加载时显示当前数据（后台定时更新）
     children = []
     for coin in COINS:
         if coin not in current_data:
@@ -319,11 +324,6 @@ def render_dashboard(n):
         ], className="mb-5"))
 
     return children
-
-# 启动服务器端定时器
-scheduler = BackgroundScheduler(timezone=HK_TZ)
-scheduler.add_job(update_data, 'interval', seconds=INTERVAL_SEC)
-scheduler.start()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8050))
