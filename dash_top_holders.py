@@ -235,12 +235,12 @@ app.layout = html.Div(
                 html.Div(
                     [
                         html.A(
-                            "更多赚钱攻略： @poly_make_money ON X",  # 显示的文字（children）
+                            "更多赚钱攻略： @poly_make_money",  # 显示的文字（children）
                             href="https://x.com/poly_make_money",  # 跳转链接
                             target="_blank",  # 在新标签页打开（推荐）
                             style={
                                 "color": "#1DA1F2",
-                                "fontSize": "22px",
+                                "fontSize": "20px",
                                 "fontWeight": "bold",
                             },  # 自定义样式
                         ),
