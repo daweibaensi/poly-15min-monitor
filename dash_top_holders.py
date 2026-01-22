@@ -222,12 +222,52 @@ scheduler.start()
 
 app = dash.Dash(__name__, external_stylesheets=["https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"])
 
-app.layout = html.Div([
-    html.H1("Polymarket 15min Top Holders Live Dashboard", className="text-center mb-4"),
-    html.Hr(),
-    dcc.Interval(id="refresh-interval", interval=INTERVAL_SEC * 1000, n_intervals=0),  # 前端自动刷新
-    html.Div(id="dashboard-content", className="container")
-])
+app.layout = html.Div(
+    [
+        # 右上角联系方式（浮动定位）
+        html.Div(
+            [
+                html.H1(
+                    "Polymarket 15min Top Holders Live Dashboard",
+                    className="text-center mb-4",
+                ),
+                # 右上角联系框
+                html.Div(
+                    [
+                        html.A(
+                            "赚钱攻略： @poly_make_money ON X",  # 显示的文字（children）
+                            href="https://x.com/poly_make_money",  # 跳转链接
+                            target="_blank",  # 在新标签页打开（推荐）
+                            style={
+                                "color": "#1DA1F2",
+                                "fontWeight": "bold",
+                            },  # 自定义样式
+                        ),
+                    ],
+                    style={
+                        "position": "absolute",
+                        "top": "30px",
+                        "right": "30px",
+                        "zIndex": 999,
+                        "background": "rgba(255, 255, 255, 0.95)",
+                        "padding": "8px 16px",
+                        "borderRadius": "8px",
+                        "boxShadow": "0 4px 12px rgba(0,0,0,0.15)",
+                        "fontSize": "14px",
+                        "color": "#444",
+                        "whiteSpace": "nowrap",
+                    },
+                ),
+            ],
+            style={"position": "relative", "marginBottom": "20px"},
+        ),  # 父容器相对定位
+        html.Hr(),
+        dcc.Interval(
+            id="refresh-interval", interval=INTERVAL_SEC * 1000, n_intervals=0
+        ),
+        html.Div(id="dashboard-content", className="container"),
+    ]
+)
 
 @app.callback(
     Output("dashboard-content", "children"),
