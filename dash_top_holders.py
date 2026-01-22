@@ -240,7 +240,7 @@ app.layout = html.Div(
                             target="_blank",  # 在新标签页打开（推荐）
                             style={
                                 "color": "#1DA1F2",
-                                "fontSize": "26px",
+                                "fontSize": "22px",
                                 "fontWeight": "bold",
                             },  # 自定义样式
                         ),
