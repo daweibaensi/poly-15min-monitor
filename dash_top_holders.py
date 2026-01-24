@@ -122,7 +122,7 @@ def update_data():
                         "user": display_name,
                         "full_user": full_name,
                         "address": h["proxyWallet"],
-                        "shares": h["amount"],
+                        "shares": h.get("shares") or h.get("amount") or 0,
                         "name": h.get("name", ""),
                         "pseudonym": h.get("pseudonym", ""),
                         "is_large": h["amount"] > LARGE_POSITION_THRESHOLD
@@ -240,7 +240,7 @@ app.layout = html.Div(
                             target="_blank",  # 在新标签页打开（推荐）
                             style={
                                 "color": "#1DA1F2",
-                                "fontSize": "20px",
+                                "fontSize": "20px",  #改字体大小
                                 "fontWeight": "bold",
                             },  # 自定义样式
                         ),
