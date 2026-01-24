@@ -69,44 +69,41 @@ def fetch_holders(condition_id: str):
 
 
 def find_current_slug(coin: str):
-    """
-    从网页源码直接匹配 conditionId（最可靠方式）
-    - 打开对应币种 15M 页面
-    - 正则匹配 "conditionId": "0x..."
-    - 返回 conditionId 或 None
-    """
     url = PAGE_URLS.get(coin, PAGE_URLS["ETH"])
     try:
         r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
-        r.raise_for_status()
-        text = r.text
-
-        # 直接匹配 conditionId（最常见格式）
-        match = re.search(r'"conditionId":\s*"([0-9a-fA-F]{64})"', text)
-        if match:
-            cond_id = match.group(1)
-            logger.info(f"{coin} 从源码获取 conditionId: {cond_id}")
-            return cond_id  # 返回 conditionId（market id）
-
-        # 宽松匹配（备用）
-        match_wide = re.search(r'conditionId[":\s]*([0-9a-fA-F]{64})', text)
-        if match_wide:
-            cond_id = match_wide.group(1)
-            logger.info(f"{coin} 宽松匹配 conditionId: {cond_id}")
-            return cond_id
-
-        logger.warning(f"{coin} 源码中未找到 conditionId")
-        return None
+        matches = re.findall(rf"{PREFIXES[coin]}(\d+)", r.text)
+        if not matches:
+            return None
+        now = int(datetime.now(HK_TZ).timestamp())
+        active = max(
+            (int(ts) for ts in matches if now < int(ts) + 900),
+            default=max(map(int, matches)),
+        )
+        return f"{PREFIXES[coin]}{active}"
     except Exception as e:
-        logger.error(f"获取 {coin} conditionId 失败: {e}")
+        logger.error(f"找 {coin} 当前市场失败: {e}")
         return None
 
+
+def get_condition_id(slug: str):
+    try:
+        r = httpx.get(
+            f"https://gamma-api.polymarket.com/markets?slug={slug}", timeout=10
+        )
+        data = r.json()
+        return data[0]["conditionId"] if data else None
+    except:
+        return None
 
 
 def update_data():
     global current_data, prev_data
     for coin in COINS:
-        cond_id = find_current_slug(coin)  # 函数现在返回 conditionId
+        slug = find_current_slug(coin)
+        if not slug:
+            continue
+        cond_id = get_condition_id(slug)
         if not cond_id:
             continue
 
