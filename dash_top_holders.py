@@ -88,12 +88,10 @@ def get_current_market(coin: str):
 
         now = int(datetime.now(HK_TZ).timestamp())
         active_markets = [m for m in data if int(m.get("endTimeStamp", 0)) > now]
-
         if not active_markets:
             logger.warning(f"{coin} 无未结束的活跃市场")
             return None, None
 
-        # 选 endTimeStamp 最大的（最新）
         latest_market = max(active_markets, key=lambda m: int(m.get("endTimeStamp", 0)))
         slug = latest_market["slug"]
         cond_id = latest_market["conditionId"]
@@ -107,7 +105,7 @@ def get_current_market(coin: str):
 def update_data():
     global current_data, prev_data
     for coin in COINS:
-        cond_id = get_current_market(coin)
+        slug, cond_id = get_current_market(coin)
         if not cond_id:
             continue
 
