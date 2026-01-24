@@ -68,9 +68,9 @@ def fetch_holders(condition_id: str):
         return []
 
 
-def get_current_condition_id(coin: str):
+def find_current_slug(coin: str):
     """
-    直接从网页源代码匹配 conditionId（最可靠方式）
+    从网页源码直接匹配 conditionId（最可靠方式）
     - 打开对应币种 15M 页面
     - 正则匹配 "conditionId": "0x..."
     - 返回 conditionId 或 None
@@ -81,14 +81,14 @@ def get_current_condition_id(coin: str):
         r.raise_for_status()
         text = r.text
 
-        # 匹配 conditionId（最常见格式）
+        # 直接匹配 conditionId（最常见格式）
         match = re.search(r'"conditionId":\s*"([0-9a-fA-F]{64})"', text)
         if match:
             cond_id = match.group(1)
             logger.info(f"{coin} 从源码获取 conditionId: {cond_id}")
-            return cond_id
+            return cond_id  # 返回 conditionId（market id）
 
-        # 如果上面没匹配，尝试更宽松匹配（备用）
+        # 宽松匹配（备用）
         match_wide = re.search(r'conditionId[":\s]*([0-9a-fA-F]{64})', text)
         if match_wide:
             cond_id = match_wide.group(1)
@@ -102,10 +102,11 @@ def get_current_condition_id(coin: str):
         return None
 
 
+
 def update_data():
     global current_data, prev_data
     for coin in COINS:
-        cond_id = get_current_condition_id(coin)
+        cond_id = find_current_slug(coin)  # 函数现在返回 conditionId
         if not cond_id:
             continue
 
