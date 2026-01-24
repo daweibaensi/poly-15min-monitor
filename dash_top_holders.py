@@ -1,14 +1,14 @@
 """
-Polymarket 15min Top Holders Live Dashboard (修复 get market id - 用 API 获取活跃市场)
-- 改用 gamma-api.polymarket.com/markets API 搜索最新活跃 15m 市场 slug 和 conditionId
-- 不再依赖页面源码 re.findall（防 Polymarket 网页结构变化）
-- 后台 APScheduler 定时运行正常
-- 时间 UTC+8
-- Telegram 推送用户名 + shares
-- 所有阈值 .env 可调
+Polymarket 15min Top Holders Live Dashboard (最终稳定版 - 修复 KeyError 'shares' + 用 API 获取市场 ID)
+- APScheduler 后台定时执行 update_data()（不依赖浏览器）
+- 前端 Interval 每 INTERVAL_SEC 秒刷新页面内容
+- 时间显示 UTC+8 (Asia/Hong_Kong)
+- Telegram 推送用户名 + shares，不重复
+- 支持多个 chat_id
 """
 
 import logging
+import re
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -64,30 +64,28 @@ def fetch_holders(condition_id: str):
 
 def get_current_market(coin: str):
     """
-    用 Gamma API 获取最新活跃 15m 市场 slug 和 conditionId
+    用 Gamma API 获取最新活跃 15min 市场 slug 和 conditionId
     - 搜索 active=true + slug_contains=prefix
     - 选 endTimeStamp 最大的（最新市场）
     """
     prefix = PREFIXES[coin]
-    params = {
-        "active": "true",
-        "limit": 10,  # 取最近 10 个，确保找到最新
-        "slug_contains": prefix,
-    }
+    params = {"active": "true", "limit": 10, "slug_contains": prefix}
     try:
         r = httpx.get(
             "https://gamma-api.polymarket.com/markets", params=params, timeout=10
         )
+        r.raise_for_status()
         data = r.json()
         if not data:
+            logger.warning(f"{coin} 无活跃 15min 市场")
             return None, None
 
         # 选 endTimeStamp 最大的市场（最新）
         latest_market = max(data, key=lambda m: int(m.get("endTimeStamp", 0)))
         slug = latest_market["slug"]
-        condition_id = latest_market["conditionId"]
-        logger.info(f"{coin} 最新市场: slug={slug}, condition_id={condition_id}")
-        return slug, condition_id
+        cond_id = latest_market["conditionId"]
+        logger.info(f"{coin} 最新市场: slug={slug}, condition_id={cond_id}")
+        return slug, cond_id
     except Exception as e:
         logger.error(f"获取 {coin} 市场失败: {e}")
         return None, None
@@ -110,7 +108,7 @@ def update_data():
                 holders = item.get("holders", [])
                 if not holders:
                     continue
-                outcome_idx = item.get("outcomeIndex")  # 改成 item.get("outcomeIndex")
+                outcome_idx = holders[0].get("outcomeIndex")
                 if outcome_idx == 0:
                     up_holders = holders
                 elif outcome_idx == 1:
@@ -120,9 +118,7 @@ def update_data():
                 rows = []
                 for h in holders_list:
                     full_name = (
-                        h.get("name")
-                        or h.get("pseudonym")
-                        or h.get("proxyWallet", "")[-8:]
+                        h.get("name") or h.get("pseudonym") or h["proxyWallet"][-8:]
                     )
                     display_name = (
                         (full_name[:USERNAME_MAX_LEN] + "...")
@@ -134,8 +130,8 @@ def update_data():
                         {
                             "user": display_name,
                             "full_user": full_name,
-                            "address": h.get("proxyWallet", ""),
-                            "shares": h.get("shares", 0),
+                            "address": h["proxyWallet"],
+                            "shares": h.get("shares") or h.get("amount") or 0,
                             "name": h.get("name", ""),
                             "pseudonym": h.get("pseudonym", ""),
                             "is_large": h.get("shares", 0) > LARGE_POSITION_THRESHOLD,
@@ -174,12 +170,8 @@ def update_data():
                         delta_str = f"{direction} { '加仓' if delta_val > 0 else '减仓' } {username} ({sign}{abs(delta_val):,.0f} shares)"
                         delta_warnings.append(delta_str)
 
-            has_concentration = (
-                max(
-                    up_df["shares"].max() if not up_df.empty else 0,
-                    down_df["shares"].max() if not down_df.empty else 0,
-                )
-                > CONCENTRATION_THRESHOLD
+            has_concentration = any(
+                df["shares"].max() > CONCENTRATION_THRESHOLD for df in [up_df, down_df]
             )
 
             current_data[coin] = {
@@ -195,7 +187,7 @@ def update_data():
 
             prev_data[coin] = {"up": up_df.copy(), "down": down_df.copy()}
 
-            # Telegram 推送
+            # Telegram 推送（修复用户名 + shares 显示，不重复）
             if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
                 chat_ids = [
                     cid.strip() for cid in TELEGRAM_CHAT_ID.split(",") if cid.strip()
@@ -203,13 +195,17 @@ def update_data():
                 messages = []
                 if has_concentration:
                     messages.append(
-                        f"<b>⚠️ 集中度警告</b> {coin} 有地址持仓 > {CONCENTRATION_THRESHOLD} shares！"
+                        f"<b>⚠️ 集中度高，注意操控风险</b> {coin} 有地址持仓 > {CONCENTRATION_THRESHOLD} shares！"
                     )
 
                 if delta_warnings:
                     messages.append(f"<b>🚨 大额异动 {coin} ({now_str})</b>：")
                     for w in delta_warnings:
-                        messages.append(w)
+                        if "UP" in w:
+                            emoji = "📈" if "加仓" in w else "📉"
+                        else:
+                            emoji = "📉" if "加仓" in w else "📈"
+                        messages.append(f"{emoji} {w}")
 
                 if messages:
                     msg = "\n".join(messages)
