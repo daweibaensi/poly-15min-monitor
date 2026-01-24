@@ -1,9 +1,9 @@
 """
-Polymarket 15min Top Holders Live Dashboard (最终稳定版 - 修复 KeyError 'shares' + 用 API 获取市场 ID)
+Polymarket 15min Top Holders Live Dashboard (最终稳定版 - Telegram推送用户名+shares修复)
 - APScheduler 后台定时执行 update_data()（不依赖浏览器）
 - 前端 Interval 每 INTERVAL_SEC 秒刷新页面内容
 - 时间显示 UTC+8 (Asia/Hong_Kong)
-- Telegram 推送用户名 + shares，不重复
+- Telegram 推送修复：用户名 + shares，不重复
 - 支持多个 chat_id
 """
 
@@ -38,6 +38,12 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 COINS = ["BTC", "ETH", "XRP", "SOL"]
 PREFIXES = {c: f"{c.lower()}-updown-15m-" for c in COINS}
+PAGE_URLS = {
+    "BTC": "https://polymarket.com/crypto/15M?coin=btc",
+    "ETH": "https://polymarket.com/crypto/15M",
+    "XRP": "https://polymarket.com/crypto/15M?coin=xrp",
+    "SOL": "https://polymarket.com/crypto/15M?coin=sol",
+}
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s | %(levelname)-5s | %(message)s"
@@ -62,39 +68,54 @@ def fetch_holders(condition_id: str):
         return []
 
 
-def get_current_market(coin: str):
+def find_current_slug(coin: str):
     """
     用 Gamma API 获取最新活跃 15min 市场 slug 和 conditionId
     - 搜索 active=true + slug_contains=prefix
     - 选 endTimeStamp 最大的（最新市场）
     """
     prefix = PREFIXES[coin]
-    params = {"active": "true", "limit": 10, "slug_contains": prefix}
+    params = {
+        "active": "true",
+        "limit": 5,  # 取最近几个，确保找到最新
+        "slug_contains": prefix
+    }
     try:
-        r = httpx.get(
-            "https://gamma-api.polymarket.com/markets", params=params, timeout=10
-        )
+        r = httpx.get("https://gamma-api.polymarket.com/markets", params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
         if not data:
             logger.warning(f"{coin} 无活跃 15min 市场")
-            return None, None
+            return None
 
         # 选 endTimeStamp 最大的市场（最新）
         latest_market = max(data, key=lambda m: int(m.get("endTimeStamp", 0)))
         slug = latest_market["slug"]
-        cond_id = latest_market["conditionId"]
-        logger.info(f"{coin} 最新市场: slug={slug}, condition_id={cond_id}")
-        return slug, cond_id
+        logger.info(f"{coin} 最新市场 slug: {slug}")
+        return slug
     except Exception as e:
         logger.error(f"获取 {coin} 市场失败: {e}")
-        return None, None
+        return None
+
+
+def get_condition_id(slug: str):
+    try:
+        r = httpx.get(
+            f"https://gamma-api.polymarket.com/markets?slug={slug}", timeout=10
+        )
+        data = r.json()
+        return data[0]["conditionId"] if data else None
+    except:
+        return None
 
 
 def update_data():
     global current_data, prev_data
     for coin in COINS:
-        slug, cond_id = get_current_market(coin)
+        slug = find_current_slug(coin)
+        if not slug:
+            continue
+        cond_id = get_condition_id(slug)
         if not cond_id:
             continue
 
@@ -131,10 +152,10 @@ def update_data():
                             "user": display_name,
                             "full_user": full_name,
                             "address": h["proxyWallet"],
-                            "shares": h.get("shares") or h.get("amount") or 0,
+                            "shares": h["amount"],
                             "name": h.get("name", ""),
                             "pseudonym": h.get("pseudonym", ""),
-                            "is_large": h.get("shares", 0) > LARGE_POSITION_THRESHOLD,
+                            "is_large": h["amount"] > LARGE_POSITION_THRESHOLD,
                         }
                     )
                 return pd.DataFrame(rows).sort_values("shares", ascending=False)
@@ -195,16 +216,22 @@ def update_data():
                 messages = []
                 if has_concentration:
                     messages.append(
-                        f"<b>⚠️ 集中度高，注意操控风险</b> {coin} 有地址持仓 > {CONCENTRATION_THRESHOLD} shares！"
+                        f"<b>⚠️ 集中度警告</b> {coin} 有地址持仓 > {CONCENTRATION_THRESHOLD} shares！"
                     )
 
                 if delta_warnings:
                     messages.append(f"<b>🚨 大额异动 {coin} ({now_str})</b>：")
                     for w in delta_warnings:
                         if "UP" in w:
-                            emoji = "📈" if "加仓" in w else "📉"
+                            if "加仓" in w:
+                                emoji = "📈"
+                            else:
+                                emoji = "📉"
                         else:
-                            emoji = "📉" if "加仓" in w else "📈"
+                            if "加仓" in w:
+                                emoji = "📉"
+                            else:
+                                emoji = "📈"
                         messages.append(f"{emoji} {w}")
 
                 if messages:
@@ -247,9 +274,44 @@ app = dash.Dash(
 
 app.layout = html.Div(
     [
-        html.H1(
-            "Polymarket 15min Top Holders Live Dashboard", className="text-center mb-4"
-        ),
+        # 右上角联系方式（浮动定位）
+        html.Div(
+            [
+                html.H1(
+                    "Polymarket 15min Top Holders Live Dashboard",
+                    className="text-center mb-4",
+                ),
+                # 右上角联系框
+                html.Div(
+                    [
+                        html.A(
+                            "更多赚钱攻略： @poly_make_money",  # 显示的文字（children）
+                            href="https://x.com/poly_make_money",  # 跳转链接
+                            target="_blank",  # 在新标签页打开（推荐）
+                            style={
+                                "color": "#1DA1F2",
+                                "fontSize": "20px",  # 改字体大小
+                                "fontWeight": "bold",
+                            },  # 自定义样式
+                        ),
+                    ],
+                    style={
+                        "position": "absolute",
+                        "top": "30px",
+                        "right": "30px",
+                        "zIndex": 999,
+                        "background": "rgba(255, 255, 255, 0.95)",
+                        "padding": "8px 16px",
+                        "borderRadius": "8px",
+                        "boxShadow": "0 4px 12px rgba(0,0,0,0.15)",
+                        "fontSize": "14px",
+                        "color": "#444",
+                        "whiteSpace": "nowrap",
+                    },
+                ),
+            ],
+            style={"position": "relative", "marginBottom": "20px"},
+        ),  # 父容器相对定位
         html.Hr(),
         dcc.Interval(
             id="refresh-interval", interval=INTERVAL_SEC * 1000, n_intervals=0
