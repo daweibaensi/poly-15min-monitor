@@ -140,10 +140,10 @@ def update_data():
                             "user": display_name,
                             "full_user": full_name,
                             "address": h["proxyWallet"],
-                            "shares": h["amount"],
+                            "shares": h["shares"],
                             "name": h.get("name", ""),
                             "pseudonym": h.get("pseudonym", ""),
-                            "is_large": h["amount"] > LARGE_POSITION_THRESHOLD,
+                            "is_large": h["shares"] > LARGE_POSITION_THRESHOLD,
                         }
                     )
                 return pd.DataFrame(rows).sort_values("shares", ascending=False)
