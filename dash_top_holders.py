@@ -68,38 +68,44 @@ def fetch_holders(condition_id: str):
         return []
 
 
-def get_current_market(coin: str):
+def get_current_condition_id(coin: str):
     """
-    用 Gamma API 获取最新活跃 15min 市场 slug 和 conditionId
-    返回 (slug, condition_id) 或 (None, None)
+    直接从网页源代码匹配 conditionId（最可靠方式）
+    - 打开对应币种 15M 页面
+    - 正则匹配 "conditionId": "0x..."
+    - 返回 conditionId 或 None
     """
-    prefix = PREFIXES[coin]
-    params = {"active": "true", "limit": 5, "slug_contains": prefix}
+    url = PAGE_URLS.get(coin, PAGE_URLS["ETH"])
     try:
-        r = httpx.get(
-            "https://gamma-api.polymarket.com/markets", params=params, timeout=10
-        )
+        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
         r.raise_for_status()
-        data = r.json()
-        if not data:
-            logger.warning(f"{coin} 无活跃 15min 市场")
-            return None, None
+        text = r.text
 
-        # 选 endTimeStamp 最大的（最新）
-        latest_market = max(data, key=lambda m: int(m.get("endTimeStamp", 0)))
-        slug = latest_market["slug"]
-        cond_id = latest_market["conditionId"]
-        logger.info(f"{coin} 最新市场: slug={slug}, condition_id={cond_id}")
-        return slug, cond_id
+        # 匹配 conditionId（最常见格式）
+        match = re.search(r'"conditionId":\s*"([0-9a-fA-F]{64})"', text)
+        if match:
+            cond_id = match.group(1)
+            logger.info(f"{coin} 从源码获取 conditionId: {cond_id}")
+            return cond_id
+
+        # 如果上面没匹配，尝试更宽松匹配（备用）
+        match_wide = re.search(r'conditionId[":\s]*([0-9a-fA-F]{64})', text)
+        if match_wide:
+            cond_id = match_wide.group(1)
+            logger.info(f"{coin} 宽松匹配 conditionId: {cond_id}")
+            return cond_id
+
+        logger.warning(f"{coin} 源码中未找到 conditionId")
+        return None
     except Exception as e:
-        logger.error(f"获取 {coin} 市场失败: {e}")
-        return None, None
+        logger.error(f"获取 {coin} conditionId 失败: {e}")
+        return None
 
 
 def update_data():
     global current_data, prev_data
     for coin in COINS:
-        slug, cond_id = get_current_market(coin)
+        cond_id = get_current_condition_id(coin)
         if not cond_id:
             continue
 
