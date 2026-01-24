@@ -45,13 +45,16 @@ PAGE_URLS = {
     "SOL": "https://polymarket.com/crypto/15M?coin=sol",
 }
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)-5s | %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s | %(levelname)-5s | %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 current_data = {}
 prev_data = {}
 
 HK_TZ = ZoneInfo("Asia/Hong_Kong")
+
 
 def fetch_holders(condition_id: str):
     params = {"market": condition_id, "limit": TOP_N, "minBalance": MIN_BALANCE}
@@ -64,27 +67,35 @@ def fetch_holders(condition_id: str):
         logger.error(f"holders API 失败 {condition_id}: {e}")
         return []
 
+
 def find_current_slug(coin: str):
     url = PAGE_URLS.get(coin, PAGE_URLS["ETH"])
     try:
         r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
-        matches = re.findall(rf'{PREFIXES[coin]}(\d+)', r.text)
+        matches = re.findall(rf"{PREFIXES[coin]}(\d+)", r.text)
         if not matches:
             return None
         now = int(datetime.now(HK_TZ).timestamp())
-        active = max((int(ts) for ts in matches if now < int(ts) + 900), default=max(map(int, matches)))
+        active = max(
+            (int(ts) for ts in matches if now < int(ts) + 900),
+            default=max(map(int, matches)),
+        )
         return f"{PREFIXES[coin]}{active}"
     except Exception as e:
         logger.error(f"找 {coin} 当前市场失败: {e}")
         return None
 
+
 def get_condition_id(slug: str):
     try:
-        r = httpx.get(f"https://gamma-api.polymarket.com/markets?slug={slug}", timeout=10)
+        r = httpx.get(
+            f"https://gamma-api.polymarket.com/markets?slug={slug}", timeout=10
+        )
         data = r.json()
         return data[0]["conditionId"] if data else None
     except:
         return None
+
 
 def update_data():
     global current_data, prev_data
@@ -115,50 +126,63 @@ def update_data():
             def make_df(holders_list):
                 rows = []
                 for h in holders_list:
-                    full_name = h.get("name") or h.get("pseudonym") or h["proxyWallet"][-8:]
-                    display_name = (full_name[:USERNAME_MAX_LEN] + "...") if len(full_name) > USERNAME_MAX_LEN else full_name
+                    full_name = (
+                        h.get("name") or h.get("pseudonym") or h["proxyWallet"][-8:]
+                    )
+                    display_name = (
+                        (full_name[:USERNAME_MAX_LEN] + "...")
+                        if len(full_name) > USERNAME_MAX_LEN
+                        else full_name
+                    )
 
-                    rows.append({
-                        "user": display_name,
-                        "full_user": full_name,
-                        "address": h["proxyWallet"],
-                        "shares": h["amount"],
-                        "name": h.get("name", ""),
-                        "pseudonym": h.get("pseudonym", ""),
-                        "is_large": h["amount"] > LARGE_POSITION_THRESHOLD
-                    })
-                df = pd.DataFrame(rows)
-                if df.empty:
-                    df = pd.DataFrame(columns=["user", "full_user", "address", "shares", "name", "pseudonym", "is_large"])
-                return df.sort_values("shares", ascending=False)
+                    rows.append(
+                        {
+                            "user": display_name,
+                            "full_user": full_name,
+                            "address": h["proxyWallet"],
+                            "shares": h["amount"],
+                            "name": h.get("name", ""),
+                            "pseudonym": h.get("pseudonym", ""),
+                            "is_large": h["amount"] > LARGE_POSITION_THRESHOLD,
+                        }
+                    )
+                return pd.DataFrame(rows).sort_values("shares", ascending=False)
 
             up_df = make_df(up_holders)
             down_df = make_df(down_holders)
 
-            up_total = up_df["shares"].sum() if "shares" in up_df.columns else 0
-            down_total = down_df["shares"].sum() if "shares" in down_df.columns else 0
+            up_total = up_df["shares"].sum()
+            down_total = down_df["shares"].sum()
             total_position = up_total + down_total
             net_position = up_total - down_total
-            net_pct = (net_position / total_position * 100) if total_position > 0 else 0.0
+            net_pct = (
+                (net_position / total_position * 100) if total_position > 0 else 0.0
+            )
 
             delta_warnings = []
             if coin in prev_data:
                 for direction, df in [("UP", up_df), ("DOWN", down_df)]:
                     prev_df = prev_data[coin].get(direction.lower(), pd.DataFrame())
+                    
+                    # 关键保护：如果 prev_df 或 df 为空/无 shares 列，直接跳过
                     if prev_df.empty or df.empty or "shares" not in df.columns or "shares" not in prev_df.columns:
                         continue
-
+                    
+                    # 安全合并
                     merged = df.set_index("address").join(prev_df.set_index("address"), rsuffix="_prev", how="outer").fillna(0)
                     merged["delta"] = merged["shares"] - merged["shares_prev"]
                     large_delta = merged[abs(merged["delta"]) > DELTA_THRESHOLD]
+                    
                     for addr, row in large_delta.iterrows():
                         delta_val = row["delta"]
                         sign = "+" if delta_val > 0 else "-"
-                        username = row.get('full_user', addr[:8])
+                        username = row.get('full_user', addr[:8])  # 防缺失
                         delta_str = f"{direction} {'加仓' if delta_val > 0 else '减仓'} {username} ({sign}{abs(delta_val):,.0f} shares)"
                         delta_warnings.append(delta_str)
 
-            has_concentration = any(df["shares"].max() > CONCENTRATION_THRESHOLD for df in [up_df, down_df] if not df.empty)
+            has_concentration = any(
+                df["shares"].max() > CONCENTRATION_THRESHOLD for df in [up_df, down_df]
+            )
 
             current_data[coin] = {
                 "up": up_df,
@@ -168,20 +192,21 @@ def update_data():
                 "net_position": net_position,
                 "net_pct": net_pct,
                 "delta_warnings": delta_warnings,
-                "has_concentration": has_concentration
+                "has_concentration": has_concentration,
             }
 
-            prev_data[coin] = {
-                "up": up_df.copy(),
-                "down": down_df.copy()
-            }
+            prev_data[coin] = {"up": up_df.copy(), "down": down_df.copy()}
 
             # Telegram 推送（修复用户名 + shares 显示，不重复）
             if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-                chat_ids = [cid.strip() for cid in TELEGRAM_CHAT_ID.split(",") if cid.strip()]
+                chat_ids = [
+                    cid.strip() for cid in TELEGRAM_CHAT_ID.split(",") if cid.strip()
+                ]
                 messages = []
                 if has_concentration:
-                    messages.append(f"<b>⚠️ 集中度警告</b> {coin} 有地址持仓 > {CONCENTRATION_THRESHOLD} shares！")
+                    messages.append(
+                        f"<b>⚠️ 集中度警告</b> {coin} 有地址持仓 > {CONCENTRATION_THRESHOLD} shares！"
+                    )
 
                 if delta_warnings:
                     messages.append(f"<b>🚨 大额异动 {coin} ({now_str})</b>：")
@@ -208,25 +233,33 @@ def update_data():
                                     "chat_id": chat_id,
                                     "text": msg,
                                     "parse_mode": "HTML",
-                                    "disable_web_page_preview": True
+                                    "disable_web_page_preview": True,
                                 },
-                                timeout=10
+                                timeout=10,
                             )
                             response.raise_for_status()
                             logger.info(f"Telegram 已推送 {coin} 警报 到 {chat_id}")
                         except Exception as e:
                             logger.error(f"推送到 {chat_id} 失败: {e}")
 
-            logger.info(f"{coin} 更新完成: {now_str} | 净持仓 {net_position:+,.0f} ({net_pct:+.1f}%) | 异动: {len(delta_warnings)} 条 | 集中度警告: {has_concentration}")
+            logger.info(
+                f"{coin} 更新完成: {now_str} | 净持仓 {net_position:+,.0f} ({net_pct:+.1f}%) | 异动: {len(delta_warnings)} 条 | 集中度警告: {has_concentration}"
+            )
         except Exception as e:
             logger.error(f"{coin} 更新失败: {e}")
 
+
 # 启动后台定时器
 scheduler = BackgroundScheduler(timezone=ZoneInfo("Asia/Hong_Kong"))
-scheduler.add_job(update_data, 'interval', seconds=INTERVAL_SEC)
+scheduler.add_job(update_data, "interval", seconds=INTERVAL_SEC)
 scheduler.start()
 
-app = dash.Dash(__name__, external_stylesheets=["https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"])
+app = dash.Dash(
+    __name__,
+    external_stylesheets=[
+        "https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+    ],
+)
 
 app.layout = html.Div(
     [
@@ -246,7 +279,7 @@ app.layout = html.Div(
                             target="_blank",  # 在新标签页打开（推荐）
                             style={
                                 "color": "#1DA1F2",
-                                "fontSize": "20px",  #改字体大小
+                                "fontSize": "20px",  # 改字体大小
                                 "fontWeight": "bold",
                             },  # 自定义样式
                         ),
@@ -276,15 +309,17 @@ app.layout = html.Div(
     ]
 )
 
+
 @app.callback(
-    Output("dashboard-content", "children"),
-    Input("refresh-interval", "n_intervals")
+    Output("dashboard-content", "children"), Input("refresh-interval", "n_intervals")
 )
 def render_dashboard(n):
     children = []
     for coin in COINS:
         if coin not in current_data:
-            children.append(html.Div(f"{coin}: 无数据", className="alert alert-warning"))
+            children.append(
+                html.Div(f"{coin}: 无数据", className="alert alert-warning")
+            )
             continue
 
         data = current_data[coin]
@@ -298,7 +333,14 @@ def render_dashboard(n):
         net_color = "green" if net > 0 else "red"
         net_text = f"净持仓: {net:+,.0f} shares ({net_pct:+.1f}%)"
 
-        concentration_warning = html.Span(" 集中度高，注意操控风险", style={"color": "orange", "fontWeight": "bold"}) if has_concentration else ""
+        concentration_warning = (
+            html.Span(
+                " 集中度高，注意操控风险",
+                style={"color": "orange", "fontWeight": "bold"},
+            )
+            if has_concentration
+            else ""
+        )
 
         delta_alerts = []
         if delta_warnings:
@@ -307,64 +349,126 @@ def render_dashboard(n):
                     color = "#006400" if "加仓" in w else "#90EE90"
                 else:
                     color = "#8B0000" if "加仓" in w else "#FF4040"
-                delta_alerts.append(html.P(w, style={"color": color, "margin": "5px 0", "fontWeight": "bold"}))
+                delta_alerts.append(
+                    html.P(
+                        w,
+                        style={"color": color, "margin": "5px 0", "fontWeight": "bold"},
+                    )
+                )
 
         up_fig = go.Figure()
         if not data["up"].empty:
-            colors = ['darkgreen' if is_large else 'green' for is_large in data["up"]["is_large"]]
-            up_fig.add_trace(go.Bar(
-                x=data["up"]["shares"],
-                y=data["up"]["user"],
-                orientation="h",
-                marker_color=colors,
-                text=data["up"]["shares"].apply(lambda x: f"{x:,.0f}"),
-                textposition="auto",
-                hovertemplate=(
-                    "<b>%{customdata[0]}</b><br>" +
-                    "Shares: %{x:,.0f}<br>" +
-                    "Address: %{customdata[1]}<br>" +
-                    "Name: %{customdata[2]}<br>" +
-                    "Pseudonym: %{customdata[3]}<extra></extra>"
-                ),
-                customdata=data["up"][["full_user", "address", "name", "pseudonym"]].values
-            ))
-        up_fig.update_layout(title=f"{coin} UP (Yes) - {ts}", xaxis_title="Shares", height=450)
+            colors = [
+                "darkgreen" if is_large else "green"
+                for is_large in data["up"]["is_large"]
+            ]
+            up_fig.add_trace(
+                go.Bar(
+                    x=data["up"]["shares"],
+                    y=data["up"]["user"],
+                    orientation="h",
+                    marker_color=colors,
+                    text=data["up"]["shares"].apply(lambda x: f"{x:,.0f}"),
+                    textposition="auto",
+                    hovertemplate=(
+                        "<b>%{customdata[0]}</b><br>"
+                        + "Shares: %{x:,.0f}<br>"
+                        + "Address: %{customdata[1]}<br>"
+                        + "Name: %{customdata[2]}<br>"
+                        + "Pseudonym: %{customdata[3]}<extra></extra>"
+                    ),
+                    customdata=data["up"][
+                        ["full_user", "address", "name", "pseudonym"]
+                    ].values,
+                )
+            )
+        up_fig.update_layout(
+            title=f"{coin} UP (Yes) - {ts}", xaxis_title="Shares", height=450
+        )
 
         down_fig = go.Figure()
         if not data["down"].empty:
-            colors = ['darkred' if is_large else 'red' for is_large in data["down"]["is_large"]]
-            down_fig.add_trace(go.Bar(
-                x=data["down"]["shares"],
-                y=data["down"]["user"],
-                orientation="h",
-                marker_color=colors,
-                text=data["down"]["shares"].apply(lambda x: f"{x:,.0f}"),
-                textposition="auto",
-                hovertemplate=(
-                    "<b>%{customdata[0]}</b><br>" +
-                    "Shares: %{x:,.0f}<br>" +
-                    "Address: %{customdata[1]}<br>" +
-                    "Name: %{customdata[2]}<br>" +
-                    "Pseudonym: %{customdata[3]}<extra></extra>"
-                ),
-                customdata=data["down"][["full_user", "address", "name", "pseudonym"]].values
-            ))
-        down_fig.update_layout(title=f"{coin} DOWN (No) - {ts}", xaxis_title="Shares", height=450)
+            colors = [
+                "darkred" if is_large else "red"
+                for is_large in data["down"]["is_large"]
+            ]
+            down_fig.add_trace(
+                go.Bar(
+                    x=data["down"]["shares"],
+                    y=data["down"]["user"],
+                    orientation="h",
+                    marker_color=colors,
+                    text=data["down"]["shares"].apply(lambda x: f"{x:,.0f}"),
+                    textposition="auto",
+                    hovertemplate=(
+                        "<b>%{customdata[0]}</b><br>"
+                        + "Shares: %{x:,.0f}<br>"
+                        + "Address: %{customdata[1]}<br>"
+                        + "Name: %{customdata[2]}<br>"
+                        + "Pseudonym: %{customdata[3]}<extra></extra>"
+                    ),
+                    customdata=data["down"][
+                        ["full_user", "address", "name", "pseudonym"]
+                    ].values,
+                )
+            )
+        down_fig.update_layout(
+            title=f"{coin} DOWN (No) - {ts}", xaxis_title="Shares", height=450
+        )
 
-        children.append(html.Div([
-            html.H3(f"{coin} - {slug}", className="text-center"),
-            html.Div([
-                html.P(net_text, style={"color": net_color, "textAlign": "center", "fontSize": "1.1em", "marginBottom": "5px"}),
-                html.P([f"最大持仓: {max(data['up']['shares'].max(), data['down']['shares'].max()):,.0f}", concentration_warning], style={"textAlign": "center", "fontSize": "1em", "marginBottom": "10px"}),
-                html.Div(delta_alerts, style={"textAlign": "center", "marginBottom": "10px"}) if delta_alerts else None
-            ]),
-            html.Div([
-                html.Div(dcc.Graph(figure=up_fig), className="col-md-6"),
-                html.Div(dcc.Graph(figure=down_fig), className="col-md-6")
-            ], className="row")
-        ], className="mb-5"))
+        children.append(
+            html.Div(
+                [
+                    html.H3(f"{coin} - {slug}", className="text-center"),
+                    html.Div(
+                        [
+                            html.P(
+                                net_text,
+                                style={
+                                    "color": net_color,
+                                    "textAlign": "center",
+                                    "fontSize": "1.1em",
+                                    "marginBottom": "5px",
+                                },
+                            ),
+                            html.P(
+                                [
+                                    f"最大持仓: {max(data['up']['shares'].max(), data['down']['shares'].max()):,.0f}",
+                                    concentration_warning,
+                                ],
+                                style={
+                                    "textAlign": "center",
+                                    "fontSize": "1em",
+                                    "marginBottom": "10px",
+                                },
+                            ),
+                            (
+                                html.Div(
+                                    delta_alerts,
+                                    style={
+                                        "textAlign": "center",
+                                        "marginBottom": "10px",
+                                    },
+                                )
+                                if delta_alerts
+                                else None
+                            ),
+                        ]
+                    ),
+                    html.Div(
+                        [
+                            html.Div(dcc.Graph(figure=up_fig), className="col-md-6"),
+                            html.Div(dcc.Graph(figure=down_fig), className="col-md-6"),
+                        ],
+                        className="row",
+                    ),
+                ],
+                className="mb-5",
+            )
+        )
 
     return children
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8050))
