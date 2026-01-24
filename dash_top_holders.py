@@ -21,6 +21,7 @@ import plotly.graph_objects as go
 import pandas as pd
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
+import time
 
 load_dotenv()
 
@@ -68,44 +69,43 @@ def fetch_holders(condition_id: str):
         return []
 
 
-def get_current_market(coin: str):
-    """
-    用 Gamma API 获取最新活跃 15min 市场 slug 和 conditionId
-    - 搜索 active=true + closed=false + slug_contains=prefix
-    - 选 endTimeStamp > now 的最大值（最新市场）
-    """
-    prefix = PREFIXES[coin]
-    params = {"active": "true", "closed": "false", "limit": 10, "slug_contains": prefix}
+def find_current_slug(coin: str):
+    now = int(time.time())
+    base = now - (now % 900)  # 当前15m窗口起点
+
+    # 边界容错：当前/上一轮/下一轮都试一下
+    candidates = [base, base - 900, base + 900, base - 1800, base + 1800]
+
+    for ts in candidates:
+        slug = f"{PREFIXES[coin]}{ts}"
+        cond = get_condition_id(slug)  # 用上面“按slug精确查”的版本
+        if cond:
+            return slug
+
+    return None
+
+
+def get_condition_id(slug: str):
     try:
         r = httpx.get(
-            "https://gamma-api.polymarket.com/markets", params=params, timeout=10
+            f"https://gamma-api.polymarket.com/markets/slug/{slug}",
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"},
         )
         r.raise_for_status()
         data = r.json()
-        if not data:
-            logger.warning(f"{coin} 无活跃 15min 市场")
-            return None, None
-
-        now = int(datetime.now(HK_TZ).timestamp())
-        active_markets = [m for m in data if int(m.get("endTimeStamp", 0)) > now]
-        if not active_markets:
-            logger.warning(f"{coin} 无未结束的活跃市场")
-            return None, None
-
-        latest_market = max(active_markets, key=lambda m: int(m.get("endTimeStamp", 0)))
-        slug = latest_market["slug"]
-        cond_id = latest_market["conditionId"]
-        logger.info(f"{coin} 最新市场: slug={slug}, condition_id={cond_id}")
-        return slug, cond_id
-    except Exception as e:
-        logger.error(f"获取 {coin} 市场失败: {e}")
-        return None, None
+        return data.get("conditionId")
+    except Exception:
+        return None
 
 
 def update_data():
     global current_data, prev_data
     for coin in COINS:
-        slug, cond_id = get_current_market(coin)
+        slug = find_current_slug(coin)
+        if not slug:
+            continue
+        cond_id = get_condition_id(slug)
         if not cond_id:
             continue
 
