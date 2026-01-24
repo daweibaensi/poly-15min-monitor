@@ -1,14 +1,14 @@
 """
-Polymarket 15min Top Holders Live Dashboard (最终稳定版 - Telegram推送用户名+shares修复)
-- APScheduler 后台定时执行 update_data()（不依赖浏览器）
-- 前端 Interval 每 INTERVAL_SEC 秒刷新页面内容
-- 时间显示 UTC+8 (Asia/Hong_Kong)
-- Telegram 推送修复：用户名 + shares，不重复
-- 支持多个 chat_id
+Polymarket 15min Top Holders Live Dashboard (修复 get market id - 用 API 获取活跃市场)
+- 改用 gamma-api.polymarket.com/markets API 搜索最新活跃 15m 市场 slug 和 conditionId
+- 不再依赖页面源码 re.findall（防 Polymarket 网页结构变化）
+- 后台 APScheduler 定时运行正常
+- 时间 UTC+8
+- Telegram 推送用户名 + shares
+- 所有阈值 .env 可调
 """
 
 import logging
-import re
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -38,12 +38,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 COINS = ["BTC", "ETH", "XRP", "SOL"]
 PREFIXES = {c: f"{c.lower()}-updown-15m-" for c in COINS}
-PAGE_URLS = {
-    "BTC": "https://polymarket.com/crypto/15M?coin=btc",
-    "ETH": "https://polymarket.com/crypto/15M",
-    "XRP": "https://polymarket.com/crypto/15M?coin=xrp",
-    "SOL": "https://polymarket.com/crypto/15M?coin=sol",
-}
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s | %(levelname)-5s | %(message)s"
@@ -68,42 +62,41 @@ def fetch_holders(condition_id: str):
         return []
 
 
-def find_current_slug(coin: str):
-    url = PAGE_URLS.get(coin, PAGE_URLS["ETH"])
-    try:
-        r = httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
-        matches = re.findall(rf"{PREFIXES[coin]}(\d+)", r.text)
-        if not matches:
-            return None
-        now = int(datetime.now(HK_TZ).timestamp())
-        active = max(
-            (int(ts) for ts in matches if now < int(ts) + 900),
-            default=max(map(int, matches)),
-        )
-        return f"{PREFIXES[coin]}{active}"
-    except Exception as e:
-        logger.error(f"找 {coin} 当前市场失败: {e}")
-        return None
-
-
-def get_condition_id(slug: str):
+def get_current_market(coin: str):
+    """
+    用 Gamma API 获取最新活跃 15m 市场 slug 和 conditionId
+    - 搜索 active=true + slug_contains=prefix
+    - 选 endTimeStamp 最大的（最新市场）
+    """
+    prefix = PREFIXES[coin]
+    params = {
+        "active": "true",
+        "limit": 10,  # 取最近 10 个，确保找到最新
+        "slug_contains": prefix,
+    }
     try:
         r = httpx.get(
-            f"https://gamma-api.polymarket.com/markets?slug={slug}", timeout=10
+            "https://gamma-api.polymarket.com/markets", params=params, timeout=10
         )
         data = r.json()
-        return data[0]["conditionId"] if data else None
-    except:
-        return None
+        if not data:
+            return None, None
+
+        # 选 endTimeStamp 最大的市场（最新）
+        latest_market = max(data, key=lambda m: int(m.get("endTimeStamp", 0)))
+        slug = latest_market["slug"]
+        condition_id = latest_market["conditionId"]
+        logger.info(f"{coin} 最新市场: slug={slug}, condition_id={condition_id}")
+        return slug, condition_id
+    except Exception as e:
+        logger.error(f"获取 {coin} 市场失败: {e}")
+        return None, None
 
 
 def update_data():
     global current_data, prev_data
     for coin in COINS:
-        slug = find_current_slug(coin)
-        if not slug:
-            continue
-        cond_id = get_condition_id(slug)
+        slug, cond_id = get_current_market(coin)
         if not cond_id:
             continue
 
@@ -117,7 +110,7 @@ def update_data():
                 holders = item.get("holders", [])
                 if not holders:
                     continue
-                outcome_idx = holders[0].get("outcomeIndex")
+                outcome_idx = item.get("outcomeIndex")  # 改成 item.get("outcomeIndex")
                 if outcome_idx == 0:
                     up_holders = holders
                 elif outcome_idx == 1:
@@ -127,7 +120,9 @@ def update_data():
                 rows = []
                 for h in holders_list:
                     full_name = (
-                        h.get("name") or h.get("pseudonym") or h["proxyWallet"][-8:]
+                        h.get("name")
+                        or h.get("pseudonym")
+                        or h.get("proxyWallet", "")[-8:]
                     )
                     display_name = (
                         (full_name[:USERNAME_MAX_LEN] + "...")
@@ -139,11 +134,11 @@ def update_data():
                         {
                             "user": display_name,
                             "full_user": full_name,
-                            "address": h["proxyWallet"],
-                            "shares": h["shares"],
+                            "address": h.get("proxyWallet", ""),
+                            "shares": h.get("shares", 0),
                             "name": h.get("name", ""),
                             "pseudonym": h.get("pseudonym", ""),
-                            "is_large": h["shares"] > LARGE_POSITION_THRESHOLD,
+                            "is_large": h.get("shares", 0) > LARGE_POSITION_THRESHOLD,
                         }
                     )
                 return pd.DataFrame(rows).sort_values("shares", ascending=False)
@@ -162,26 +157,29 @@ def update_data():
             delta_warnings = []
             if coin in prev_data:
                 for direction, df in [("UP", up_df), ("DOWN", down_df)]:
-                    prev_df = prev_data[coin].get(direction.lower(), pd.DataFrame())
-                    
-                    # 关键保护：如果 prev_df 或 df 为空/无 shares 列，直接跳过
-                    if prev_df.empty or df.empty or "shares" not in df.columns or "shares" not in prev_df.columns:
-                        continue
-                    
-                    # 安全合并
-                    merged = df.set_index("address").join(prev_df.set_index("address"), rsuffix="_prev", how="outer").fillna(0)
+                    prev_df = prev_data[coin][direction.lower()]
+                    merged = (
+                        df.set_index("address")
+                        .join(
+                            prev_df.set_index("address"), rsuffix="_prev", how="outer"
+                        )
+                        .fillna(0)
+                    )
                     merged["delta"] = merged["shares"] - merged["shares_prev"]
                     large_delta = merged[abs(merged["delta"]) > DELTA_THRESHOLD]
-                    
                     for addr, row in large_delta.iterrows():
                         delta_val = row["delta"]
                         sign = "+" if delta_val > 0 else "-"
-                        username = row.get('full_user', addr[:8])  # 防缺失
-                        delta_str = f"{direction} {'加仓' if delta_val > 0 else '减仓'} {username} ({sign}{abs(delta_val):,.0f} shares)"
+                        username = row["full_user"]
+                        delta_str = f"{direction} { '加仓' if delta_val > 0 else '减仓' } {username} ({sign}{abs(delta_val):,.0f} shares)"
                         delta_warnings.append(delta_str)
 
-            has_concentration = any(
-                df["shares"].max() > CONCENTRATION_THRESHOLD for df in [up_df, down_df]
+            has_concentration = (
+                max(
+                    up_df["shares"].max() if not up_df.empty else 0,
+                    down_df["shares"].max() if not down_df.empty else 0,
+                )
+                > CONCENTRATION_THRESHOLD
             )
 
             current_data[coin] = {
@@ -197,7 +195,7 @@ def update_data():
 
             prev_data[coin] = {"up": up_df.copy(), "down": down_df.copy()}
 
-            # Telegram 推送（修复用户名 + shares 显示，不重复）
+            # Telegram 推送
             if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
                 chat_ids = [
                     cid.strip() for cid in TELEGRAM_CHAT_ID.split(",") if cid.strip()
@@ -211,17 +209,7 @@ def update_data():
                 if delta_warnings:
                     messages.append(f"<b>🚨 大额异动 {coin} ({now_str})</b>：")
                     for w in delta_warnings:
-                        if "UP" in w:
-                            if "加仓" in w:
-                                emoji = "📈"
-                            else:
-                                emoji = "📉"
-                        else:
-                            if "加仓" in w:
-                                emoji = "📉"
-                            else:
-                                emoji = "📈"
-                        messages.append(f"{emoji} {w}")
+                        messages.append(w)
 
                 if messages:
                     msg = "\n".join(messages)
@@ -263,44 +251,9 @@ app = dash.Dash(
 
 app.layout = html.Div(
     [
-        # 右上角联系方式（浮动定位）
-        html.Div(
-            [
-                html.H1(
-                    "Polymarket 15min Top Holders Live Dashboard",
-                    className="text-center mb-4",
-                ),
-                # 右上角联系框
-                html.Div(
-                    [
-                        html.A(
-                            "更多赚钱攻略： @poly_make_money",  # 显示的文字（children）
-                            href="https://x.com/poly_make_money",  # 跳转链接
-                            target="_blank",  # 在新标签页打开（推荐）
-                            style={
-                                "color": "#1DA1F2",
-                                "fontSize": "20px",  # 改字体大小
-                                "fontWeight": "bold",
-                            },  # 自定义样式
-                        ),
-                    ],
-                    style={
-                        "position": "absolute",
-                        "top": "30px",
-                        "right": "30px",
-                        "zIndex": 999,
-                        "background": "rgba(255, 255, 255, 0.95)",
-                        "padding": "8px 16px",
-                        "borderRadius": "8px",
-                        "boxShadow": "0 4px 12px rgba(0,0,0,0.15)",
-                        "fontSize": "14px",
-                        "color": "#444",
-                        "whiteSpace": "nowrap",
-                    },
-                ),
-            ],
-            style={"position": "relative", "marginBottom": "20px"},
-        ),  # 父容器相对定位
+        html.H1(
+            "Polymarket 15min Top Holders Live Dashboard", className="text-center mb-4"
+        ),
         html.Hr(),
         dcc.Interval(
             id="refresh-interval", interval=INTERVAL_SEC * 1000, n_intervals=0
