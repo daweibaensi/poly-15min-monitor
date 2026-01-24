@@ -122,18 +122,21 @@ def update_data():
                         "user": display_name,
                         "full_user": full_name,
                         "address": h["proxyWallet"],
-                        "shares": h.get("shares") or h.get("amount") or 0,
+                        "shares": h["amount"],
                         "name": h.get("name", ""),
                         "pseudonym": h.get("pseudonym", ""),
                         "is_large": h["amount"] > LARGE_POSITION_THRESHOLD
                     })
-                return pd.DataFrame(rows).sort_values("shares", ascending=False)
+                df = pd.DataFrame(rows)
+                if df.empty:
+                    df = pd.DataFrame(columns=["user", "full_user", "address", "shares", "name", "pseudonym", "is_large"])
+                return df.sort_values("shares", ascending=False)
 
             up_df = make_df(up_holders)
             down_df = make_df(down_holders)
 
-            up_total = up_df["shares"].sum()
-            down_total = down_df["shares"].sum()
+            up_total = up_df["shares"].sum() if "shares" in up_df.columns else 0
+            down_total = down_df["shares"].sum() if "shares" in down_df.columns else 0
             total_position = up_total + down_total
             net_position = up_total - down_total
             net_pct = (net_position / total_position * 100) if total_position > 0 else 0.0
@@ -141,18 +144,21 @@ def update_data():
             delta_warnings = []
             if coin in prev_data:
                 for direction, df in [("UP", up_df), ("DOWN", down_df)]:
-                    prev_df = prev_data[coin][direction.lower()]
+                    prev_df = prev_data[coin].get(direction.lower(), pd.DataFrame())
+                    if prev_df.empty or df.empty or "shares" not in df.columns or "shares" not in prev_df.columns:
+                        continue
+
                     merged = df.set_index("address").join(prev_df.set_index("address"), rsuffix="_prev", how="outer").fillna(0)
                     merged["delta"] = merged["shares"] - merged["shares_prev"]
                     large_delta = merged[abs(merged["delta"]) > DELTA_THRESHOLD]
                     for addr, row in large_delta.iterrows():
                         delta_val = row["delta"]
                         sign = "+" if delta_val > 0 else "-"
-                        username = row['full_user']
-                        delta_str = f"{direction} { '加仓' if delta_val > 0 else '减仓' } {username} ({sign}{abs(delta_val):,.0f} shares)"
+                        username = row.get('full_user', addr[:8])
+                        delta_str = f"{direction} {'加仓' if delta_val > 0 else '减仓'} {username} ({sign}{abs(delta_val):,.0f} shares)"
                         delta_warnings.append(delta_str)
 
-            has_concentration = any(df["shares"].max() > CONCENTRATION_THRESHOLD for df in [up_df, down_df])
+            has_concentration = any(df["shares"].max() > CONCENTRATION_THRESHOLD for df in [up_df, down_df] if not df.empty)
 
             current_data[coin] = {
                 "up": up_df,
